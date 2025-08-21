@@ -1,63 +1,79 @@
-const express = require("express");
-const puppeteer = require("puppeteer");
+import express from "express";
+import puppeteer from "puppeteer";
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json());
 
-app.get("/health", (req, res) => res.json({ ok: true }));
+// --- Health check ---
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
 
+// --- Render endpoint ---
 app.post("/render", async (req, res) => {
-  const { url, viewport, userAgent } = req.body || {};
-  if (!url) return res.status(400).json({ error: "url is required" });
+  const { url, viewport, userAgent } = req.body;
 
+  if (!url) {
+    return res.status(400).json({ error: "Missing url" });
+  }
+
+  let browser;
   try {
-    const browser = await puppeteer.launch({
+    browser = await puppeteer.launch({
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-blink-features=AutomationControlled"
-      ],
-      executablePath: puppeteer.executablePath() // o channel: 'chrome'
+      executablePath: await puppeteer.executablePath(),
     });
 
     const page = await browser.newPage();
 
-    // Viewport & UA realista
-    await page.setViewport(viewport || { width: 1366, height: 768 });
-    await page.setUserAgent(
-      userAgent ||
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
-    );
+    // Configuración del viewport
+    if (viewport?.width && viewport?.height) {
+      await page.setViewport({
+        width: viewport.width,
+        height: viewport.height,
+      });
+    }
+
+    // Configuración del userAgent
+    if (userAgent) {
+      await page.setUserAgent(userAgent);
+    }
+
+    // Cabeceras comunes para evitar bloqueos
     await page.setExtraHTTPHeaders({
-      "accept-language": "es-ES,es;q=0.9,en;q=0.8"
+      "accept-language": "es-ES,es;q=0.9,en;q=0.8",
     });
 
-    // Navegar y capturar status inicial
+    // Intentar navegar
     const response = await page.goto(url, {
-      waitUntil: ["domcontentloaded", "networkidle2"],
-      timeout: 60000
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
     });
-    const status = response ? response.status() : 0;
-
-    // A veces hay renders tardíos
-    await page.waitForTimeout(1500);
 
     const html = await page.content();
-    await browser.close();
+    const status = response?.status() ?? 0;
 
-    // Siempre devolver 200 con el HTML y el status del origen
-    return res.status(200).json({ html, originStatus: status });
-  } catch (err) {
-    return res.status(200).json({
-      html: "",
-      originStatus: 0,
-      error: String(err)
+    res.status(200).json({
+      originStatus: status,
+      html,
     });
+  } catch (err) {
+    console.error("Render error:", err);
+    res.status(200).json({
+      originStatus: 500,
+      html: "",
+      error: err.message,
+    });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Renderer up on :${PORT}`));
+// --- Start server ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ Renderer service running on port ${PORT}`);
+});
